@@ -23,6 +23,8 @@ from .views import (
     add_patient_disease,
     assign_disease,
     update_patient_disease_status,
+    patient_disease_list,
+    patient_disease_detail,
 
     # Dashboard
     dashboard,
@@ -53,8 +55,7 @@ from .views import (
 )
 
 urlpatterns = [
-
-    # ================= AUTH =================
+    path('disease/<int:record_id>/', patient_disease_detail),
     path('register/', register_user),
     path('login/', login_user),
     path('forgot-password/', forgot_password),
@@ -70,6 +71,7 @@ urlpatterns = [
     # ================= DISEASE =================
     path('patients/add-disease/', add_patient_disease),
     path('diseases/', disease_list),
+    path('patient-diseases/', patient_disease_list),
     path('diseases/<int:disease_id>/update/', update_disease),
     path('diseases/<int:disease_id>/delete/', delete_disease),
 

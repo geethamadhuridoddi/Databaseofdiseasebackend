@@ -69,7 +69,12 @@ def login_user(request):
         if user is None:
             return JsonResponse({"message": "Invalid email or password"}, status=400)
 
-        return JsonResponse({"message": "Login successful"})
+        return JsonResponse({
+            "message": "Login successful",
+            "user_id": user.id,
+            "email": user.email,
+            "name": f"{user.first_name} {user.last_name}".strip() or user.username
+        })
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
@@ -209,21 +214,61 @@ def add_patient(request):
 @require_http_methods(["GET"])
 def patient_list(request):
     try:
-        patients = Patient.objects.all()
+        status_filter = request.GET.get('status')
+        user_id = request.GET.get('user_id')
 
-        data = []
-        for patient in patients:
-            data.append({
-                "id": patient.id,
-                "name": patient.name,
-                "age": patient.age,
-                "gender": patient.gender,
-                "phone_number": patient.phone_number,
-                "address": patient.address,
-                "created_at": patient.created_at,
-            })
-
-        return JsonResponse(data, safe=False)
+        if status_filter and status_filter.lower() != 'all':
+            # Return CaseRecord objects (mapped to Patient in Android)
+            records = PatientDisease.objects.select_related('patient', 'disease').filter(status__iexact=status_filter)
+            
+            data = []
+            for r in records:
+                data.append({
+                    "record_id": r.id,
+                    "patient_id": r.patient.id,
+                    "patient_name": r.patient.name,
+                    "age": r.patient.age,
+                    "gender": r.patient.gender,
+                    "phone": r.patient.phone_number,
+                    "address": r.patient.address,
+                    "disease_name": r.disease.name,
+                    "status": r.status,
+                    "severity": r.severity,
+                    "assigned_doctor": r.assigned_doctor,
+                    "notes": r.notes,
+                    "diagnosis_date": str(r.diagnosis_date),
+                })
+            return JsonResponse(data, safe=False)
+        else:
+            # Return Patient objects with nested diseases
+            patients = Patient.objects.prefetch_related('diseases__disease').all()
+            
+            data = []
+            for p in patients:
+                disease_records = p.diseases.all()
+                diseases_data = []
+                for dr in disease_records:
+                    diseases_data.append({
+                        "name": dr.disease.name,
+                        "status": dr.status,
+                        "severity": dr.severity,
+                        "assigned_doctor": dr.assigned_doctor,
+                        "notes": dr.notes,
+                        "diagnosis_date": str(dr.diagnosis_date),
+                    })
+                
+                data.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "age": p.age,
+                    "gender": p.gender,
+                    "phone": p.phone_number,
+                    "address": p.address,
+                    "disease_count": disease_records.count(),
+                    "diseases": diseases_data,
+                    "created_at": p.created_at,
+                })
+            return JsonResponse(data, safe=False)
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
@@ -363,6 +408,61 @@ def disease_list(request):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+#---------------------LIST ALL PATIENT DISEASES---------------------------#
+@csrf_exempt
+@require_http_methods(["GET"])
+def patient_disease_list(request):
+    try:
+        records = PatientDisease.objects.select_related('patient', 'disease').all()
+
+        data = []
+        for r in records:
+            data.append({
+                "record_id": r.id,
+                "disease_name": r.disease.name,
+                "patient_name": r.patient.name,
+                "patient_id": r.patient.id,
+                "status": r.status,
+                "severity": r.severity,
+                "doctor": r.assigned_doctor,
+                "notes": r.notes,
+                "diagnosis_date": str(r.diagnosis_date),
+            })
+
+        return JsonResponse(data, safe=False)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+#---------------------PATIENT DISEASE DETAIL---------------------------#
+@csrf_exempt
+@require_http_methods(["GET"])
+def patient_disease_detail(request, record_id):
+    try:
+        r = PatientDisease.objects.select_related('patient', 'disease').get(id=record_id)
+        
+        data = {
+            "record_id": r.id,
+            "disease_name": r.disease.name,
+            "patient_name": r.patient.name,
+            "patient_id": r.patient.id,
+            "status": r.status,
+            "severity": r.severity,
+            "assigned_doctor": r.assigned_doctor,
+            "doctor": r.assigned_doctor,
+            "notes": r.notes,
+            "diagnosis_date": str(r.diagnosis_date),
+            "age": r.patient.age,
+            "gender": r.patient.gender
+        }
+
+        return JsonResponse(data, safe=False)
+
+    except PatientDisease.DoesNotExist:
+        return JsonResponse({"error": "Record not found"}, status=404)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
     
 #---------------------UPDATE DISEASE---------------------------#    
 
@@ -424,29 +524,42 @@ from api.models import PatientDisease
 
 
 def dashboard(request):
-    total_patients = Patient.objects.count()
-    total_diseases = Disease.objects.count()
+    try:
+        total_patients = Patient.objects.count()
+        total_diseases = Disease.objects.count()
+        total_cases = PatientDisease.objects.count()
 
-    # Status summary
-    status_summary = (
-        PatientDisease.objects
-        .values("status")
-        .annotate(count=Count("id"))
-    )
+        # Specific counts for the Android cards
+        active_cases = PatientDisease.objects.filter(status__iexact='active').count()
+        recovering_cases = PatientDisease.objects.filter(status__iexact='recovering').count()
+        critical_cases = PatientDisease.objects.filter(status__iexact='critical').count()
 
-    # Disease summary
-    disease_summary = (
-        PatientDisease.objects
-        .values("disease__name")
-        .annotate(count=Count("id"))
-    )
+        # Status summary
+        status_summary = list(
+            PatientDisease.objects
+            .values("status")
+            .annotate(count=Count("id"))
+        )
 
-    return JsonResponse({
-        "total_patients": total_patients,
-        "total_diseases": total_diseases,
-        "status_summary": list(status_summary),
-        "disease_summary": list(disease_summary),
-    })
+        # Disease summary
+        disease_summary = list(
+            PatientDisease.objects
+            .values("disease__name")
+            .annotate(count=Count("id"))
+        )
+
+        return JsonResponse({
+            "total_patients": total_patients,
+            "total_diseases": total_diseases,
+            "total_cases": total_cases,
+            "active_cases": active_cases,
+            "recovering_cases": recovering_cases,
+            "critical_cases": critical_cases,
+            "status_summary": status_summary,
+            "disease_summary": disease_summary,
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 from api.models import Notification
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -952,14 +1065,24 @@ import json
 
 # Get Profile
 def get_profile(request):
+    try:
+        user_id = request.GET.get("user_id")
+        if user_id:
+            user = User.objects.get(id=user_id)
+        else:
+            user = User.objects.first()
 
-    user = User.objects.first()
+        if not user:
+             return JsonResponse({"name": "Doctor", "role": "Doctor", "phone": "9876543210"})
 
-    return JsonResponse({
-        "name": user.first_name,
-        "role": "Doctor",
-        "phone": "9876543210"
-    })
+        return JsonResponse({
+            "name": f"{user.first_name} {user.last_name}".strip() or user.username,
+            "email": user.email,
+            "role": "Doctor",
+            "phone": "9876543210"
+        })
+    except Exception:
+        return JsonResponse({"name": "Doctor", "role": "Doctor", "phone": "9876543210"})
 
 
 # Update Profile
